@@ -1,0 +1,60 @@
+{
+  "nodes": {
+    "crate2nix": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1695973508,
+        "narHash": "sha256-qfSKp8s3hRMp/W3jKOjDOEZkhnulAL8/Oxa5v+CcZx8=",
+        "owner": "jeffa5",
+        "repo": "crate2nix",
+        "rev": "4657d316dc9b6b2a6f89cdb8c7797eb0a2b275d2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jeffa5",
+        "repo": "crate2nix",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1685677062,
+        "narHash": "sha256-zoHF7+HNwNwne2XEomphbdc4Y8tdWT16EUxUTXpOKpQ=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "95be94370d09f97f6af6a1df1eb9649b5260724e",
+        "type": "github"
+      },
+      "original": {
+        "id": "nixpkgs",
+        "type": "indirect"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1688556768,
+        "narHash": "sha256-mhd6g0iJGjEfOr3+6mZZOclUveeNr64OwxdbNtLc8mY=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "27bd67e55fe09f9d68c77ff151c3e44c4f81f7de",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "crate2nix": "crate2nix",
+        "nixpkgs": "nixpkgs_2"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
