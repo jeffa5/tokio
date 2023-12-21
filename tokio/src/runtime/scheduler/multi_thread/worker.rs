@@ -71,7 +71,9 @@ use crate::util::atomic_cell::AtomicCell;
 use crate::util::rand::{FastRand, RngSeedGenerator};
 
 use std::cell::RefCell;
+use std::sync::atomic::AtomicUsize;
 use std::task::Waker;
+use std::thread::sleep;
 use std::time::Duration;
 
 cfg_metrics! {
@@ -419,7 +421,16 @@ where
         // Once the blocking task is done executing, we will attempt to
         // steal the core back.
         let worker = cx.worker.clone();
-        runtime::spawn_blocking(move || run(worker));
+        runtime::spawn_blocking(move || {
+            // stub out the dynamic pool bits as this is not a main worker thread but a blocking
+            // one
+            run(
+                worker,
+                0,
+                Arc::new(AtomicUsize::new(0)),
+                Duration::default(),
+            )
+        });
         Ok(())
     });
 
@@ -443,13 +454,73 @@ where
 
 impl Launch {
     pub(crate) fn launch(mut self) {
-        for worker in self.0.drain(..) {
-            runtime::spawn_blocking(move || run(worker));
+        let worker_count = self.0.len();
+        let cores_to_use = Arc::new(AtomicUsize::new(worker_count));
+        let rescale_period = Duration::from_millis(100);
+        let ctu = Arc::clone(&cores_to_use);
+        runtime::spawn_blocking(move || scale_worker_pool(worker_count, ctu, rescale_period));
+
+        for (index, worker) in self.0.drain(..).enumerate() {
+            let ctu = Arc::clone(&cores_to_use);
+            runtime::spawn_blocking(move || run(worker, index, ctu, rescale_period));
         }
     }
 }
 
-fn run(worker: Arc<Worker>) {
+fn get_all_cpu_usage() -> u64 {
+    let content = std::fs::read_to_string("/proc/stat").unwrap();
+    let cpu_line = content.lines().next().unwrap().trim();
+    let mut columns = cpu_line.split(char::is_whitespace).skip(2);
+    let user = columns.next().unwrap().parse::<u64>().unwrap();
+    let sys = columns.nth(1).unwrap().parse::<u64>().unwrap();
+    user + sys
+}
+
+fn get_self_cpu_usage() -> u64 {
+    let content = std::fs::read_to_string("/proc/self/stat").unwrap();
+    let cpu_line = content.lines().next().unwrap().trim();
+    let mut columns = cpu_line.split(char::is_whitespace).skip(13);
+    let user = columns.next().unwrap().parse::<u64>().unwrap();
+    let sys = columns.next().unwrap().parse::<u64>().unwrap();
+    user + sys
+}
+
+fn scale_worker_pool(
+    worker_count: usize,
+    cores_to_use: Arc<AtomicUsize>,
+    rescale_period: Duration,
+) {
+    let mut last_all_usage = 0;
+    let mut last_self_usage = 0;
+    let mut last_cores = cores_to_use.load(std::sync::atomic::Ordering::Relaxed);
+    loop {
+        let all_usage = get_all_cpu_usage();
+        let self_usage = get_self_cpu_usage();
+        let all_usage_diff = all_usage - last_all_usage;
+        let self_usage_diff = self_usage - last_self_usage;
+        if all_usage_diff > 0 {
+            let cores = self_usage_diff as f64 / all_usage_diff as f64;
+            let cores = cores * worker_count as f64;
+            let cores = cores.ceil() as usize;
+            let cores = cores.max(1);
+            if cores != last_cores {
+                last_cores = cores;
+                cores_to_use.store(cores, std::sync::atomic::Ordering::Relaxed);
+            }
+            sleep(rescale_period);
+        }
+
+        last_all_usage = all_usage;
+        last_self_usage = self_usage;
+    }
+}
+
+fn run(
+    worker: Arc<Worker>,
+    index: usize,
+    cores_to_use: Arc<AtomicUsize>,
+    rescale_period: Duration,
+) {
     struct AbortOnPanic;
 
     impl Drop for AbortOnPanic {
@@ -488,7 +559,7 @@ fn run(worker: Arc<Worker>) {
 
             // This should always be an error. It only returns a `Result` to support
             // using `?` to short circuit.
-            assert!(cx.run(core).is_err());
+            assert!(cx.run(core, index, cores_to_use, rescale_period).is_err());
 
             // Check if there are any deferred tasks to notify. This can happen when
             // the worker core is lost due to `block_in_place()` being called from
@@ -499,7 +570,13 @@ fn run(worker: Arc<Worker>) {
 }
 
 impl Context {
-    fn run(&self, mut core: Box<Core>) -> RunResult {
+    fn run(
+        &self,
+        mut core: Box<Core>,
+        index: usize,
+        cores_to_use: Arc<AtomicUsize>,
+        rescale_period: Duration,
+    ) -> RunResult {
         // Reset `lifo_enabled` here in case the core was previously stolen from
         // a task that had the LIFO slot disabled.
         self.reset_lifo_enabled(&mut core);
@@ -509,6 +586,12 @@ impl Context {
         core.stats.start_processing_scheduled_tasks();
 
         while !core.is_shutdown {
+            let ctu = cores_to_use.load(std::sync::atomic::Ordering::Relaxed);
+            if ctu <= index {
+                sleep(rescale_period);
+                continue;
+            }
+
             self.assert_lifo_enabled_is_correct(&core);
 
             if core.is_traced {
